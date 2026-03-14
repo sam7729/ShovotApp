@@ -13,9 +13,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { supabase } from '../../lib/supabase';
 import ListingCard from '../../components/ListingCard';
 import CategoryPill from '../../components/CategoryPill';
-import { mockListings } from '../../data/mockData';
 import { Listing } from '../../types';
 
 const CATEGORIES = [
@@ -32,7 +32,7 @@ const CATEGORIES = [
 export default function HomeScreen() {
   const isDark = useColorScheme() === 'dark';
   const [refreshing, setRefreshing] = useState(false);
-  const [listings, setListings] = useState<Listing[]>(mockListings.slice(0, 10));
+  const [listings, setListings] = useState<Listing[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
 
@@ -42,20 +42,65 @@ export default function HomeScreen() {
   const subColor = isDark ? '#8E8E93' : '#6B7280';
   const inputBg = isDark ? '#2C2C2E' : '#F3F4F6';
 
-  const onRefresh = useCallback(() => {
+  const fetchListings = useCallback(async () => {
     setRefreshing(true);
-    setTimeout(() => {
-      setListings([...mockListings].sort(() => Math.random() - 0.5).slice(0, 10));
-      setRefreshing(false);
-    }, 1000);
+    const { data } = await supabase
+      .from('listings')
+      .select('*, seller:profiles(*)')
+      .eq('status', 'active')
+      .order('created_at', { ascending: false });
+    
+    if (data) setListings(data as any);
+    setRefreshing(false);
   }, []);
 
-  function toggleSave(id: string) {
+  // Fetch user's saved listing IDs
+  const fetchSaved = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    const { data } = await supabase
+      .from('saved_listings')
+      .select('listing_id')
+      .eq('user_id', session.user.id);
+    if (data) {
+      setSaved(new Set(data.map((r: any) => r.listing_id)));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchListings();
+    fetchSaved();
+  }, [fetchListings, fetchSaved]);
+
+  const onRefresh = () => {
+    fetchListings();
+    fetchSaved();
+  };
+
+  async function toggleSave(id: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
+    const isSaved = saved.has(id);
+    
+    // Optimistic update
     setSaved(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      isSaved ? next.delete(id) : next.add(id);
       return next;
     });
+
+    if (isSaved) {
+      await supabase
+        .from('saved_listings')
+        .delete()
+        .eq('user_id', session.user.id)
+        .eq('listing_id', id);
+    } else {
+      await supabase
+        .from('saved_listings')
+        .insert({ user_id: session.user.id, listing_id: id });
+    }
   }
 
   const filtered = selectedCategory

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,11 +7,13 @@ import {
   StyleSheet,
   SafeAreaView,
   useColorScheme,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { mockConversations, CURRENT_USER_ID } from '../../data/mockData';
-import { Conversation } from '../../types';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../hooks/useAuth';
+import { Conversation, Message } from '../../types';
 import { timeAgo } from '../../lib/timeAgo';
 
 function getOtherUser(conv: Conversation, myId: string) {
@@ -31,6 +33,60 @@ const AVATAR_COLORS = ['#2563EB', '#7C3AED', '#059669', '#D97706', '#DC2626'];
 
 export default function ChatScreen() {
   const isDark = useColorScheme() === 'dark';
+  const { userId } = useAuth();
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    fetchConvs();
+
+    // Subscribe to messages changes to update the inbox
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          fetchConvs();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId]);
+
+  async function fetchConvs() {
+    const { data } = await supabase
+      .from('conversations')
+      .select(`
+        *,
+        buyer:profiles!conversations_buyer_id_fkey(*),
+        seller:profiles!conversations_seller_id_fkey(*),
+        listing:listings(*),
+        messages(*)
+      `)
+      .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
+      .order('created_at', { ascending: false });
+
+    if (data) {
+      const mapped = data.map((conv: any) => {
+        const sortedMsgs = conv.messages?.sort(
+          (a: Message, b: Message) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        return {
+          ...conv,
+          last_message: sortedMsgs?.[0] || null,
+        };
+      });
+      setConversations(mapped);
+    }
+    setLoading(false);
+  }
+
   const bg = isDark ? '#000000' : '#F9FAFB';
   const headerBg = isDark ? '#1C1C1E' : '#FFFFFF';
   const textColor = isDark ? '#FFFFFF' : '#111827';
@@ -39,8 +95,9 @@ export default function ChatScreen() {
   const dividerColor = isDark ? '#2C2C2E' : '#F3F4F6';
 
   function renderItem({ item }: { item: Conversation }) {
-    const other = getOtherUser(item, CURRENT_USER_ID);
-    const avatarColor = AVATAR_COLORS[item.id.charCodeAt(item.id.length - 1) % AVATAR_COLORS.length];
+    if (!userId) return null;
+    const other = getOtherUser(item, userId);
+    const avatarColor = AVATAR_COLORS[item.id.charCodeAt(item.id.length - 1) % AVATAR_COLORS.length] || '#2563EB';
 
     return (
       <TouchableOpacity
@@ -85,17 +142,15 @@ export default function ChatScreen() {
     <SafeAreaView style={[styles.safe, { backgroundColor: bg }]}>
       <View style={[styles.header, { backgroundColor: headerBg }]}>
         <Text style={[styles.headerTitle, { color: textColor }]}>Messages</Text>
-        <TouchableOpacity>
-          <Ionicons name="create-outline" size={24} color="#2563EB" />
-        </TouchableOpacity>
+        {loading && <ActivityIndicator />}
       </View>
 
       <FlatList
-        data={mockConversations}
+        data={conversations}
         keyExtractor={item => item.id}
         renderItem={renderItem}
         style={{ backgroundColor: bg }}
-        contentContainerStyle={mockConversations.length === 0 ? styles.emptyContainer : undefined}
+        contentContainerStyle={conversations.length === 0 ? styles.emptyContainer : undefined}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="chatbubbles-outline" size={56} color={subColor} />

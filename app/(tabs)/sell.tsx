@@ -17,6 +17,9 @@ import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../hooks/useAuth';
+import { ActivityIndicator } from 'react-native';
 
 const CATEGORIES = ['Electronics', 'Cars', 'Home', 'Fashion', 'Sports', 'Kids', 'Jobs', 'Other'];
 const CONDITIONS = [
@@ -40,6 +43,8 @@ export default function SellScreen() {
   const [delivery, setDelivery] = useState<string[]>([]);
   const [photos, setPhotos] = useState<string[]>([]);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const { userId } = useAuth();
 
   const bg = isDark ? '#000000' : '#F9FAFB';
   const headerBg = isDark ? '#1C1C1E' : '#FFFFFF';
@@ -73,18 +78,93 @@ export default function SellScreen() {
     );
   }
 
-  function handlePost() {
+  async function handlePost() {
     if (!title || !price || !category) {
       Alert.alert('Missing info', 'Please fill in title, price, and category.');
       return;
     }
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert('Posted!', 'Your listing has been published.', [
-      { text: 'OK', onPress: () => router.push('/(tabs)/home') },
-    ]);
+    if (!userId) {
+      Alert.alert('Error', 'You must be logged in to post.');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const imageUrls: string[] = [];
+      
+      // Upload images if any
+      for (const uri of photos) {
+        try {
+          const ext = uri.split('.').pop()?.toLowerCase() || 'jpeg';
+          const filename = `${userId}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+          
+          // React Native compatible upload using FormData
+          const formData = new FormData();
+          formData.append('file', {
+            uri,
+            name: filename,
+            type: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+          } as any);
+          
+          const { data, error } = await supabase.storage
+            .from('photos')
+            .upload(filename, formData, {
+              contentType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+              upsert: true,
+            });
+            
+          if (error) {
+            console.warn('Upload error:', error.message);
+            continue;
+          }
+          
+          const { data: publicUrlData } = supabase.storage
+            .from('photos')
+            .getPublicUrl(filename);
+            
+          imageUrls.push(publicUrlData.publicUrl);
+        } catch (e: any) {
+          console.warn('Image upload failed', e?.message || e);
+        }
+      }
+
+      const { error } = await supabase.from('listings').insert({
+        user_id: userId,
+        title,
+        description,
+        price: parseFloat(price.replace(/,/g, '')),
+        category,
+        condition: condition || 'good',
+        delivery_options: delivery.length > 0 ? delivery : ['meetup'],
+        city: 'Tashkent',
+        images: imageUrls,
+        status: 'active'
+      });
+
+      if (error) throw error;
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Posted!', 'Your listing has been published.', [
+        { text: 'OK', onPress: () => router.push('/(tabs)/home') },
+      ]);
+      
+      // Reset form
+      setTitle('');
+      setPrice('');
+      setDescription('');
+      setCategory('');
+      setCondition('');
+      setDelivery([]);
+      setPhotos([]);
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to post listing.');
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const canPost = title.length > 0 && price.length > 0 && category.length > 0;
+  const canPost = title.length > 0 && price.length > 0 && category.length > 0 && !loading;
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: bg }]}>
@@ -293,8 +373,14 @@ export default function SellScreen() {
             activeOpacity={0.8}
           >
             <LinearGradient colors={['#2563EB', '#1D4ED8']} style={styles.postGrad}>
-              <Ionicons name="checkmark-circle-outline" size={20} color="#FFFFFF" />
-              <Text style={styles.postText}>Post listing</Text>
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle-outline" size={20} color="#FFFFFF" />
+                  <Text style={styles.postText}>Post listing</Text>
+                </>
+              )}
             </LinearGradient>
           </TouchableOpacity>
         </View>

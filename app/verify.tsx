@@ -13,16 +13,17 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ActivityIndicator } from 'react-native';
+import { supabase } from '../lib/supabase';
 
 const AUTH_KEY = '@shovot_auth';
-const MOCK_OTP = '1234';
 
 export default function VerifyScreen() {
   const { phone } = useLocalSearchParams<{ phone: string }>();
-  const [otp, setOtp] = useState(['', '', '', '']);
+  const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [countdown, setCountdown] = useState(60);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const inputRefs = useRef<(TextInput | null)[]>([]);
   const isDark = useColorScheme() === 'dark';
 
@@ -45,11 +46,11 @@ export default function VerifyScreen() {
     next[index] = digit;
     setOtp(next);
     setError('');
-    if (digit && index < 3) {
+    if (digit && index < 5) {
       inputRefs.current[index + 1]?.focus();
     }
-    if (index === 3 && digit) {
-      verifyOtp([...next.slice(0, 3), digit]);
+    if (index === 5 && digit) {
+      verifyOtp([...next.slice(0, 5), digit]);
     }
   }
 
@@ -64,16 +65,43 @@ export default function VerifyScreen() {
 
   async function verifyOtp(digits: string[]) {
     const code = digits.join('');
-    if (code === MOCK_OTP) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await AsyncStorage.setItem(AUTH_KEY, 'user-1');
-      router.replace('/(tabs)/home');
-    } else {
+    if (code.length !== 6) return;
+    
+    setLoading(true);
+    const { data: { session }, error: verifyError } = await supabase.auth.verifyOtp({
+      phone,
+      token: code,
+      type: 'sms',
+    });
+
+    if (verifyError || !session) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setError('Incorrect code. Try 1234 for demo.');
-      setOtp(['', '', '', '']);
+      setError(verifyError?.message || 'Verification failed');
+      setOtp(['', '', '', '', '', '']);
       inputRefs.current[0]?.focus();
+      setLoading(false);
+      return;
     }
+
+    // Checking if user profile exists
+    if (session.user) {
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', session.user.id)
+        .maybeSingle();
+        
+      if (!profile) {
+        // First-time user, route to onboarding
+        setLoading(false);
+        router.replace('/onboarding');
+        return;
+      }
+    }
+    
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setLoading(false);
+    router.replace('/(tabs)/home');
   }
 
   function handleVerify() {
@@ -99,10 +127,9 @@ export default function VerifyScreen() {
             </View>
             <Text style={[styles.title, { color: textColor }]}>Enter the code</Text>
             <Text style={[styles.sub, { color: subColor }]}>
-              We sent a 4-digit code to{'\n'}
+              We sent a 6-digit code to{'\n'}
               <Text style={{ color: textColor, fontWeight: '600' }}>{phone}</Text>
             </Text>
-            <Text style={[styles.hint, { color: '#2563EB' }]}>Demo: use code 1234</Text>
           </View>
 
           <View style={styles.otpRow}>
@@ -138,11 +165,15 @@ export default function VerifyScreen() {
           <TouchableOpacity
             style={[styles.button, { opacity: otp.every(d => d) ? 1 : 0.5 }]}
             onPress={handleVerify}
-            disabled={!otp.every(d => d)}
+            disabled={!otp.every(d => d) || loading}
             activeOpacity={0.8}
           >
             <LinearGradient colors={['#2563EB', '#1D4ED8']} style={styles.btnGrad}>
-              <Text style={styles.btnText}>Verify</Text>
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.btnText}>Verify</Text>
+              )}
             </LinearGradient>
           </TouchableOpacity>
 
@@ -184,15 +215,16 @@ const styles = StyleSheet.create({
   otpRow: {
     flexDirection: 'row',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: 12,
     marginBottom: 24,
   },
   otpInput: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
+    width: 48,
+    height: 56,
+    borderRadius: 12,
     borderWidth: 2,
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '700',
   },
   error: {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,14 +9,18 @@ import {
   SafeAreaView,
   useColorScheme,
   Alert,
+  ActivityIndicator,
+  Image,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { mockListings, mockConversations, CURRENT_USER_ID } from '../../data/mockData';
 import { formatPrice } from '../../lib/formatPrice';
 import { timeAgo } from '../../lib/timeAgo';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../hooks/useAuth';
+import { Listing } from '../../types';
 
 const { width } = Dimensions.get('window');
 
@@ -30,10 +34,40 @@ const CONDITION_LABELS: Record<string, string> = {
 export default function ListingDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const isDark = useColorScheme() === 'dark';
+  const { userId } = useAuth();
   const [saved, setSaved] = useState(false);
   const [imageIndex, setImageIndex] = useState(0);
+  const [listing, setListing] = useState<Listing | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const listing = mockListings.find(l => l.id === id);
+  useEffect(() => {
+    async function fetchListing() {
+      const { data } = await supabase
+        .from('listings')
+        .select('*, seller:profiles(*)')
+        .eq('id', id)
+        .single();
+        
+      if (data) {
+        setListing(data as any);
+      }
+      setLoading(false);
+    }
+
+    async function checkSaved() {
+      if (!userId) return;
+      const { data } = await supabase
+        .from('saved_listings')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('listing_id', id)
+        .maybeSingle();
+      if (data) setSaved(true);
+    }
+
+    fetchListing();
+    checkSaved();
+  }, [id, userId]);
 
   const bg = isDark ? '#000000' : '#F9FAFB';
   const cardBg = isDark ? '#1C1C1E' : '#FFFFFF';
@@ -41,6 +75,14 @@ export default function ListingDetailScreen() {
   const subColor = isDark ? '#8E8E93' : '#6B7280';
   const borderColor = isDark ? '#2C2C2E' : '#F3F4F6';
   const imageBg = isDark ? '#2C2C2E' : '#E5E7EB';
+
+  if (loading) {
+    return (
+      <View style={[styles.container, { backgroundColor: bg, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#2563EB" />
+      </View>
+    );
+  }
 
   if (!listing) {
     return (
@@ -56,27 +98,66 @@ export default function ListingDetailScreen() {
     );
   }
 
-  function handleMessage() {
+  async function handleMessage() {
     if (!listing) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const existing = mockConversations.find(c => c.listing_id === listing.id);
-    if (existing) {
-      router.push(`/chat/${existing.id}`);
-    } else {
-      Alert.alert(
-        'Start chat',
-        `Message ${listing.seller?.name ?? 'seller'} about this listing?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Message', onPress: () => router.push('/chat/conv-1') },
-        ]
-      );
+    
+    if (!userId) {
+      Alert.alert('Error', 'Please log in to message the seller.');
+      return;
+    }
+
+    try {
+      // Check if conversation already exists
+      const { data: existingConvs } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('listing_id', listing.id)
+        .eq('buyer_id', userId)
+        .maybeSingle();
+
+      if (existingConvs) {
+         router.push(`/chat/${existingConvs.id}`);
+         return;
+      }
+
+      // Create new conversation
+      const { data: newConv, error } = await supabase
+        .from('conversations')
+        .insert({
+          listing_id: listing.id,
+          buyer_id: userId,
+          seller_id: listing.user_id,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (newConv) {
+        router.push(`/chat/${newConv.id}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', 'Could not start conversation.');
     }
   }
 
-  function toggleSave() {
-    setSaved(prev => !prev);
+  async function toggleSave() {
+    if (!userId || !listing) return;
+    const wasSaved = saved;
+    setSaved(!wasSaved);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    if (wasSaved) {
+      await supabase
+        .from('saved_listings')
+        .delete()
+        .eq('user_id', userId)
+        .eq('listing_id', listing.id);
+    } else {
+      await supabase
+        .from('saved_listings')
+        .insert({ user_id: userId, listing_id: listing.id });
+    }
   }
 
   const joinDate = listing?.seller?.created_at
@@ -86,8 +167,7 @@ export default function ListingDetailScreen() {
       })
     : '';
 
-  // Fake image placeholders
-  const imageCount = Math.max(1, (listing?.images?.length ?? 0) || 3);
+  const imageCount = Math.max(1, (listing?.images?.length ?? 0));
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
@@ -104,11 +184,15 @@ export default function ListingDetailScreen() {
             }}
             scrollEventThrottle={16}
           >
-            {Array.from({ length: imageCount }).map((_, i) => (
-              <View key={i} style={[styles.imagePage, { backgroundColor: imageBg }]}>
+            {listing.images && listing.images.length > 0 ? (
+              listing.images.map((uri: string, i: number) => (
+                <Image key={i} source={{ uri }} style={[styles.imagePage, { backgroundColor: imageBg }]} />
+              ))
+            ) : (
+              <View style={[styles.imagePage, { backgroundColor: imageBg }]}>
                 <Ionicons name="image-outline" size={64} color={isDark ? '#3A3A3C' : '#D1D5DB'} />
               </View>
-            ))}
+            )}
           </ScrollView>
 
           {/* Back button */}
@@ -182,7 +266,11 @@ export default function ListingDetailScreen() {
 
         {/* Seller card */}
         {listing.seller && (
-          <View style={[styles.section, { backgroundColor: cardBg, borderTopColor: borderColor }]}>
+          <TouchableOpacity
+            style={[styles.section, { backgroundColor: cardBg, borderTopColor: borderColor }]}
+            onPress={() => router.push(`/profile/seller/${listing.user_id}`)}
+            activeOpacity={0.7}
+          >
             <Text style={[styles.sectionTitle, { color: textColor }]}>Seller</Text>
             <View style={styles.sellerCard}>
               <View style={[styles.sellerAvatar, { backgroundColor: '#2563EB' }]}>
@@ -194,15 +282,12 @@ export default function ListingDetailScreen() {
                 <Text style={[styles.sellerName, { color: textColor }]}>{listing.seller.name}</Text>
                 <View style={styles.sellerMeta}>
                   <Text style={[styles.sellerMetaText, { color: subColor }]}>⭐ 4.8</Text>
-                  <Text style={[styles.sellerMetaText, { color: subColor }]}>• 12 sales</Text>
                   <Text style={[styles.sellerMetaText, { color: subColor }]}>• Since {joinDate}</Text>
                 </View>
               </View>
-              <TouchableOpacity>
-                <Ionicons name="chevron-forward" size={20} color={subColor} />
-              </TouchableOpacity>
+              <Ionicons name="chevron-forward" size={20} color={subColor} />
             </View>
-          </View>
+          </TouchableOpacity>
         )}
 
         <View style={{ height: 100 }} />
@@ -222,7 +307,7 @@ export default function ListingDetailScreen() {
             />
           </TouchableOpacity>
 
-          {listing.user_id !== CURRENT_USER_ID && (
+          {listing.user_id !== userId && (
             <TouchableOpacity
               style={styles.messageBtn}
               onPress={handleMessage}
@@ -235,8 +320,8 @@ export default function ListingDetailScreen() {
             </TouchableOpacity>
           )}
 
-          {listing.user_id === CURRENT_USER_ID && (
-            <TouchableOpacity style={styles.messageBtn} activeOpacity={0.85}>
+          {listing.user_id === userId && (
+            <TouchableOpacity style={styles.messageBtn} activeOpacity={0.85} onPress={() => router.push(`/listing/edit/${listing.id}`)}>
               <LinearGradient colors={['#6B7280', '#4B5563']} style={styles.messageBtnGrad}>
                 <Ionicons name="pencil-outline" size={18} color="#FFFFFF" />
                 <Text style={styles.messageBtnText}>Edit listing</Text>

@@ -1,7 +1,5 @@
 import { useState, useEffect } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const AUTH_KEY = '@shovot_auth';
+import { supabase } from '../lib/supabase';
 
 interface AuthState {
   isAuthenticated: boolean;
@@ -17,31 +15,28 @@ export function useAuth() {
   });
 
   useEffect(() => {
-    checkAuth();
-  }, []);
-
-  async function checkAuth() {
-    try {
-      const userId = await AsyncStorage.getItem(AUTH_KEY);
+    supabase.auth.getSession().then(({ data: { session } }) => {
       setState({
-        isAuthenticated: !!userId,
-        userId,
+        isAuthenticated: !!session,
+        userId: session?.user.id || null,
         isLoading: false,
       });
-    } catch {
-      setState({ isAuthenticated: false, userId: null, isLoading: false });
-    }
-  }
+    });
 
-  async function signIn(userId: string) {
-    await AsyncStorage.setItem(AUTH_KEY, userId);
-    setState({ isAuthenticated: true, userId, isLoading: false });
-  }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setState({
+        isAuthenticated: !!session,
+        userId: session?.user.id || null,
+        isLoading: false,
+      });
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   async function signOut() {
-    await AsyncStorage.removeItem(AUTH_KEY);
-    setState({ isAuthenticated: false, userId: null, isLoading: false });
+    await supabase.auth.signOut();
   }
 
-  return { ...state, signIn, signOut };
+  return { ...state, signOut };
 }

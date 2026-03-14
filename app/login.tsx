@@ -9,11 +9,14 @@ import {
   Platform,
   useColorScheme,
   ScrollView,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
+import { supabase } from '../lib/supabase';
 
 export default function LoginScreen() {
   const [phone, setPhone] = useState('');
@@ -27,10 +30,35 @@ export default function LoginScreen() {
   const borderColor = isDark ? '#3A3A3C' : '#E5E7EB';
   const prefixBg = isDark ? '#3A3A3C' : '#F3F4F6';
 
-  function handleSend() {
+  const [loading, setLoading] = useState(false);
+
+  async function handleSend() {
     if (phone.length < 9) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: '/verify', params: { phone: `+998${phone}` } });
+    
+    setLoading(true);
+    const phoneNumber = `+998${phone}`;
+    
+    // First try the real Supabase Auth
+    const { error } = await supabase.auth.signInWithOtp({
+      phone: phoneNumber,
+    });
+    
+    setLoading(false);
+    
+    // If Supabase complains about the phone provider (common without paid Twilio),
+    // let the user proceed to the verify screen anyway so they can use test numbers
+    // that are predefined in the Supabase dashboard
+    if (error) {
+      if (error.message.includes('unsupported') || error.message.includes('provider')) {
+        console.warn('Real SMS failed, proceeding for test number verification.');
+        router.push({ pathname: '/verify', params: { phone: phoneNumber } });
+      } else {
+        Alert.alert('Error', error.message);
+      }
+    } else {
+      router.push({ pathname: '/verify', params: { phone: phoneNumber } });
+    }
   }
 
   return (
@@ -87,7 +115,11 @@ export default function LoginScreen() {
                 colors={['#2563EB', '#1D4ED8']}
                 style={styles.buttonGradient}
               >
-                <Text style={styles.buttonText}>Send SMS code</Text>
+                {loading ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.buttonText}>Send SMS code</Text>
+                )}
               </LinearGradient>
             </TouchableOpacity>
           </View>

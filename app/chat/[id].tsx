@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,28 +10,92 @@ import {
   KeyboardAvoidingView,
   Platform,
   useColorScheme,
+  Image,
+  Modal,
+  Dimensions,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import ChatBubble from '../../components/ChatBubble';
-import { mockConversations, mockMessages, CURRENT_USER_ID } from '../../data/mockData';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../hooks/useAuth';
 import { Message } from '../../types';
 import { formatPrice } from '../../lib/formatPrice';
 
-function getOtherUser(conv: typeof mockConversations[0]) {
-  return conv.buyer_id === CURRENT_USER_ID ? conv.seller : conv.buyer;
-}
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const isDark = useColorScheme() === 'dark';
+  const { userId } = useAuth();
   const [text, setText] = useState('');
-  const [messages, setMessages] = useState<Message[]>(mockMessages[id] ?? []);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversation, setConversation] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [reactionTarget, setReactionTarget] = useState<Message | null>(null);
   const listRef = useRef<FlatList>(null);
 
-  const conversation = mockConversations.find(c => c.id === id);
-  const otherUser = conversation ? getOtherUser(conversation) : null;
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId) return;
+      fetchConversation();
+      markAsRead();
+
+      const channel = supabase
+        .channel(`chat-${id}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${id}` },
+          (payload) => {
+            if (payload.eventType === 'INSERT') {
+              setMessages(prev => [...prev, payload.new as Message]);
+              setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+              // Mark incoming messages as read
+              if ((payload.new as any).sender_id !== userId) {
+                supabase.from('messages').update({ status: 'read' }).eq('id', (payload.new as any).id).then(() => {});
+              }
+            } else if (payload.eventType === 'UPDATE') {
+              setMessages(prev => prev.map(m => m.id === (payload.new as any).id ? { ...m, ...payload.new } as Message : m));
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }, [id, userId])
+  );
+
+  async function fetchConversation() {
+    const { data } = await supabase
+      .from('conversations')
+      .select('*, buyer:profiles!conversations_buyer_id_fkey(*), seller:profiles!conversations_seller_id_fkey(*), listing:listings(*), messages(*)')
+      .eq('id', id)
+      .single();
+
+    if (data) {
+      setConversation(data);
+      const sorted = data.messages?.sort((a: any, b: any) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      setMessages(sorted || []);
+    }
+    setLoading(false);
+  }
+
+  async function markAsRead() {
+    if (!userId) return;
+    await supabase
+      .from('messages')
+      .update({ status: 'read' })
+      .eq('conversation_id', id)
+      .neq('sender_id', userId)
+      .neq('status', 'read');
+  }
+
+  const otherUser = conversation?.buyer_id === userId ? conversation?.seller : conversation?.buyer;
   const listing = conversation?.listing;
 
   const bg = isDark ? '#000000' : '#F9FAFB';
@@ -41,21 +105,39 @@ export default function ChatDetailScreen() {
   const inputBg = isDark ? '#2C2C2E' : '#F3F4F6';
   const borderColor = isDark ? '#2C2C2E' : '#E5E7EB';
   const listingCardBg = isDark ? '#1C1C1E' : '#FFFFFF';
-  const listingImageBg = isDark ? '#2C2C2E' : '#E5E7EB';
 
-  function sendMessage() {
-    if (!text.trim()) return;
+  async function sendMessage() {
+    if (!text.trim() || !userId) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const msg: Message = {
-      id: `msg-${Date.now()}`,
-      conversation_id: id,
-      sender_id: CURRENT_USER_ID,
-      content: text.trim(),
-      created_at: new Date().toISOString(),
-    };
-    setMessages(prev => [...prev, msg]);
+
+    const content = text.trim();
     setText('');
-    setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+
+    await supabase.from('messages').insert({
+      conversation_id: id,
+      sender_id: userId,
+      content,
+      status: 'delivered',
+    });
+  }
+
+  async function reactToMessage(msg: Message, emoji: string) {
+    setReactionTarget(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Toggle reaction: if same emoji, remove it
+    const currentReaction = (msg as any).reaction;
+    const newReaction = currentReaction === emoji ? null : emoji;
+
+    await supabase
+      .from('messages')
+      .update({ reaction: newReaction })
+      .eq('id', msg.id);
+  }
+
+  function handleLongPress(msg: Message) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    setReactionTarget(msg);
   }
 
   return (
@@ -65,19 +147,23 @@ export default function ChatDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={textColor} />
         </TouchableOpacity>
-        <View style={styles.headerContent}>
+        <TouchableOpacity
+          style={styles.headerContent}
+          onPress={() => otherUser && router.push(`/profile/seller/${otherUser.id}`)}
+          activeOpacity={0.7}
+        >
           <View style={[styles.headerAvatar, { backgroundColor: '#2563EB' }]}>
             <Text style={styles.headerAvatarText}>
-              {otherUser?.name?.split(' ').map(p => p[0]).join('').toUpperCase() ?? '?'}
+              {otherUser?.name?.split(' ').map((p: string) => p[0]).join('').toUpperCase() ?? '?'}
             </Text>
           </View>
           <View>
             <Text style={[styles.headerName, { color: textColor }]}>
               {otherUser?.name ?? 'Chat'}
             </Text>
-            <Text style={[styles.headerSub, { color: subColor }]}>Usually replies quickly</Text>
+            <Text style={[styles.headerSub, { color: subColor }]}>Tap to view profile</Text>
           </View>
-        </View>
+        </TouchableOpacity>
         <TouchableOpacity>
           <Ionicons name="ellipsis-horizontal" size={24} color={textColor} />
         </TouchableOpacity>
@@ -102,9 +188,13 @@ export default function ChatDetailScreen() {
                 onPress={() => router.push(`/listing/${listing.id}`)}
                 activeOpacity={0.8}
               >
-                <View style={[styles.listingImage, { backgroundColor: listingImageBg }]}>
-                  <Ionicons name="image-outline" size={20} color={isDark ? '#3A3A3C' : '#D1D5DB'} />
-                </View>
+                {listing.images?.[0] ? (
+                  <Image source={{ uri: listing.images[0] }} style={styles.listingImage} />
+                ) : (
+                  <View style={[styles.listingImagePlaceholder, { backgroundColor: isDark ? '#2C2C2E' : '#E5E7EB' }]}>
+                    <Ionicons name="image-outline" size={20} color={subColor} />
+                  </View>
+                )}
                 <View style={styles.listingInfo}>
                   <Text style={[styles.listingTitle, { color: textColor }]} numberOfLines={1}>
                     {listing.title}
@@ -118,16 +208,13 @@ export default function ChatDetailScreen() {
             ) : null
           }
           renderItem={({ item }) => (
-            <ChatBubble message={item} isOwn={item.sender_id === CURRENT_USER_ID} />
+            <ChatBubble message={item} isOwn={item.sender_id === userId} onLongPress={handleLongPress} />
           )}
           showsVerticalScrollIndicator={false}
         />
 
         {/* Input bar */}
         <View style={[styles.inputBar, { backgroundColor: headerBg, borderTopColor: borderColor }]}>
-          <TouchableOpacity style={styles.attachBtn}>
-            <Ionicons name="attach-outline" size={22} color={subColor} />
-          </TouchableOpacity>
           <View style={[styles.inputWrap, { backgroundColor: inputBg }]}>
             <TextInput
               style={[styles.input, { color: textColor }]}
@@ -148,6 +235,27 @@ export default function ChatDetailScreen() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Reaction Modal */}
+      <Modal visible={!!reactionTarget} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.reactionOverlay}
+          activeOpacity={1}
+          onPress={() => setReactionTarget(null)}
+        >
+          <View style={[styles.reactionBar, { backgroundColor: isDark ? '#2C2C2E' : '#FFFFFF' }]}>
+            {REACTIONS.map(emoji => (
+              <TouchableOpacity
+                key={emoji}
+                style={styles.reactionBtn}
+                onPress={() => reactionTarget && reactToMessage(reactionTarget, emoji)}
+              >
+                <Text style={styles.reactionEmoji}>{emoji}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -190,6 +298,11 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 10,
+  },
+  listingImagePlaceholder: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -203,13 +316,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderTopWidth: 1,
     gap: 8,
-  },
-  attachBtn: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 2,
   },
   inputWrap: {
     flex: 1,
@@ -228,4 +334,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 2,
   },
+  reactionOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reactionBar: {
+    flexDirection: 'row',
+    borderRadius: 24,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  reactionBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reactionEmoji: { fontSize: 24 },
 });

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,24 +8,66 @@ import {
   SafeAreaView,
   useColorScheme,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CURRENT_USER } from '../../data/mockData';
-
-const AUTH_KEY = '@shovot_auth';
-
-const MENU_ITEMS = [
-  { id: 'listings', label: 'My listings', icon: 'list-outline' as const, count: 3 },
-  { id: 'saved', label: 'Saved items', icon: 'heart-outline' as const, count: 7 },
-  { id: 'purchases', label: 'Purchase history', icon: 'receipt-outline' as const },
-  { id: 'settings', label: 'Settings', icon: 'settings-outline' as const },
-  { id: 'language', label: 'Language', icon: 'language-outline' as const, value: "O'zbek" },
-];
+import { router, useFocusEffect } from 'expo-router';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../hooks/useAuth';
+import { Profile } from '../../types';
 
 export default function ProfileScreen() {
   const isDark = useColorScheme() === 'dark';
+  const { signOut, userId } = useAuth();
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeCount, setActiveCount] = useState(0);
+  const [soldCount, setSoldCount] = useState(0);
+  const [savedCount, setSavedCount] = useState(0);
+
+  const fetchProfile = useCallback(async () => {
+    if (!userId) return;
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    if (data) setProfile(data);
+    setLoading(false);
+  }, [userId]);
+
+  const fetchCounts = useCallback(async () => {
+    if (!userId) return;
+    // Active listings count
+    const { count: active } = await supabase
+      .from('listings')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('status', 'active');
+    setActiveCount(active || 0);
+
+    // Sold listings count
+    const { count: sold } = await supabase
+      .from('listings')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('status', 'sold');
+    setSoldCount(sold || 0);
+
+    // Saved items count
+    const { count: savedItems } = await supabase
+      .from('saved_listings')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+    setSavedCount(savedItems || 0);
+  }, [userId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchProfile();
+      fetchCounts();
+    }, [fetchProfile, fetchCounts])
+  );
 
   const bg = isDark ? '#000000' : '#F9FAFB';
   const headerBg = isDark ? '#1C1C1E' : '#FFFFFF';
@@ -41,17 +83,48 @@ export default function ProfileScreen() {
         text: 'Log out',
         style: 'destructive',
         onPress: async () => {
-          await AsyncStorage.removeItem(AUTH_KEY);
-          router.replace('/login');
+          await signOut();
         },
       },
     ]);
   }
 
-  const joinDate = new Date(CURRENT_USER.created_at).toLocaleDateString('en-US', {
+  function handleMenuPress(id: string) {
+    switch (id) {
+      case 'listings':
+        router.push('/profile/my-listings');
+        break;
+      case 'saved':
+        router.push('/profile/saved');
+        break;
+      case 'purchases':
+        router.push('/profile/purchases');
+        break;
+      case 'settings':
+        router.push('/profile/settings');
+        break;
+    }
+  }
+
+  if (loading || !profile) {
+    return (
+      <View style={[styles.safe, { backgroundColor: bg, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color="#2563EB" />
+      </View>
+    );
+  }
+
+  const joinDate = new Date(profile.created_at).toLocaleDateString('en-US', {
     month: 'long',
     year: 'numeric',
   });
+
+  const MENU_ITEMS = [
+    { id: 'listings', label: 'My listings', icon: 'list-outline' as const, count: activeCount },
+    { id: 'saved', label: 'Saved items', icon: 'heart-outline' as const, count: savedCount },
+    { id: 'purchases', label: 'Purchase history', icon: 'receipt-outline' as const },
+    { id: 'settings', label: 'Settings', icon: 'settings-outline' as const },
+  ];
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: bg }]}>
@@ -67,18 +140,18 @@ export default function ProfileScreen() {
         <View style={[styles.profileCard, { backgroundColor: cardBg }]}>
           <View style={styles.avatarCircle}>
             <Text style={styles.avatarText}>
-              {CURRENT_USER.name.split(' ').map(p => p[0]).join('').toUpperCase()}
+              {profile.name.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2)}
             </Text>
           </View>
           <View style={styles.profileInfo}>
-            <Text style={[styles.userName, { color: textColor }]}>{CURRENT_USER.name}</Text>
+            <Text style={[styles.userName, { color: textColor }]}>{profile.name}</Text>
             <Text style={[styles.joinDate, { color: subColor }]}>Member since {joinDate}</Text>
             <View style={styles.locationRow}>
               <Ionicons name="location-outline" size={14} color={subColor} />
-              <Text style={[styles.location, { color: subColor }]}>{CURRENT_USER.city}</Text>
+              <Text style={[styles.location, { color: subColor }]}>{profile.city}</Text>
             </View>
           </View>
-          <TouchableOpacity style={styles.editBtn}>
+          <TouchableOpacity style={styles.editBtn} onPress={() => router.push('/profile/edit')}>
             <Ionicons name="pencil-outline" size={18} color="#2563EB" />
           </TouchableOpacity>
         </View>
@@ -86,9 +159,9 @@ export default function ProfileScreen() {
         {/* Stats */}
         <View style={[styles.statsCard, { backgroundColor: cardBg }]}>
           {[
-            { label: 'Listings', value: '3' },
-            { label: 'Rating', value: '4.8 ⭐' },
-            { label: 'Sold', value: '12' },
+            { label: 'Active', value: String(activeCount) },
+            { label: 'Sold', value: String(soldCount) },
+            { label: 'Saved', value: String(savedCount) },
           ].map((stat, i) => (
             <React.Fragment key={stat.label}>
               <View style={styles.statItem}>
@@ -110,19 +183,17 @@ export default function ProfileScreen() {
                 i < MENU_ITEMS.length - 1 && { borderBottomColor: borderColor, borderBottomWidth: 1 },
               ]}
               activeOpacity={0.7}
+              onPress={() => handleMenuPress(item.id)}
             >
               <View style={[styles.menuIcon, { backgroundColor: '#DBEAFE' }]}>
                 <Ionicons name={item.icon} size={18} color="#2563EB" />
               </View>
               <Text style={[styles.menuLabel, { color: textColor }]}>{item.label}</Text>
               <View style={{ flex: 1 }} />
-              {item.count !== undefined && (
+              {item.count !== undefined && item.count > 0 && (
                 <View style={styles.countBadge}>
                   <Text style={styles.countText}>{item.count}</Text>
                 </View>
-              )}
-              {item.value && (
-                <Text style={[styles.menuValue, { color: subColor }]}>{item.value}</Text>
               )}
               <Ionicons name="chevron-forward" size={16} color={subColor} style={{ marginLeft: 4 }} />
             </TouchableOpacity>
@@ -232,7 +303,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   menuLabel: { fontSize: 15, fontWeight: '500' },
-  menuValue: { fontSize: 14 },
   countBadge: {
     backgroundColor: '#2563EB',
     borderRadius: 10,

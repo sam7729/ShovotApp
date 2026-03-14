@@ -2,6 +2,7 @@ import React from 'react';
 import {
   View,
   Text,
+  Image,
   TouchableOpacity,
   StyleSheet,
   Dimensions,
@@ -30,28 +31,34 @@ export default function ListingCard({ listing, onSave, saved }: Props) {
   const subColor = isDark ? '#8E8E93' : '#6B7280';
   const imageColor = isDark ? '#2C2C2E' : '#F3F4F6';
 
+  const imageUrl = listing.images && listing.images.length > 0 ? listing.images[0] : null;
+
   return (
     <TouchableOpacity
       style={[styles.card, { backgroundColor: cardColor }]}
       onPress={() => router.push(`/listing/${listing.id}`)}
       activeOpacity={0.85}
     >
-      <View style={[styles.imagePlaceholder, { backgroundColor: imageColor }]}>
-        <Ionicons name="image-outline" size={32} color={isDark ? '#3A3A3C' : '#D1D5DB'} />
-        {onSave && (
-          <TouchableOpacity
-            style={styles.saveButton}
-            onPress={() => onSave(listing.id)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons
-              name={saved ? 'heart' : 'heart-outline'}
-              size={20}
-              color={saved ? '#EF4444' : '#FFFFFF'}
-            />
-          </TouchableOpacity>
-        )}
-      </View>
+      {imageUrl ? (
+        <Image source={{ uri: imageUrl }} style={styles.image} resizeMode="cover" />
+      ) : (
+        <View style={[styles.imagePlaceholder, { backgroundColor: imageColor }]}>
+          <Ionicons name="image-outline" size={32} color={isDark ? '#3A3A3C' : '#D1D5DB'} />
+        </View>
+      )}
+      {onSave && (
+        <TouchableOpacity
+          style={styles.saveButton}
+          onPress={() => onSave(listing.id)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons
+            name={saved ? 'heart' : 'heart-outline'}
+            size={20}
+            color={saved ? '#EF4444' : '#FFFFFF'}
+          />
+        </TouchableOpacity>
+      )}
       <View style={styles.info}>
         <Text style={[styles.price, { color: textColor }]} numberOfLines={1}>
           {formatPrice(listing.price)}
@@ -77,6 +84,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 4,
     elevation: 2,
+  },
+  image: {
+    width: '100%',
+    height: cardWidth * 0.85,
   },
   imagePlaceholder: {
     height: cardWidth * 0.85,
@@ -110,3 +121,4 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+

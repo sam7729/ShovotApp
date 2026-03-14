@@ -9,10 +9,11 @@ import {
   SafeAreaView,
   useColorScheme,
   Keyboard,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import ListingCard from '../../components/ListingCard';
-import { mockListings } from '../../data/mockData';
+import { supabase } from '../../lib/supabase';
 import { Listing } from '../../types';
 
 const POPULAR_CATEGORIES = [
@@ -46,19 +47,23 @@ export default function SearchScreen() {
     return () => clearTimeout(timer);
   }, []);
 
-  function handleSearch(text: string) {
+  async function handleSearch(text: string) {
     setQuery(text);
     if (text.trim().length === 0) {
       setResults([]);
       return;
     }
-    const filtered = mockListings.filter(
-      l =>
-        l.title.toLowerCase().includes(text.toLowerCase()) ||
-        l.category.toLowerCase().includes(text.toLowerCase()) ||
-        l.description.toLowerCase().includes(text.toLowerCase())
-    );
-    setResults(filtered);
+    
+    // Using ilike for case-insensitive search across title, description, and category
+    const { data } = await supabase
+      .from('listings')
+      .select('*, seller:profiles(*)')
+      .or(`title.ilike.%${text}%,description.ilike.%${text}%,category.ilike.%${text}%`)
+      .order('created_at', { ascending: false });
+      
+    if (data) {
+      setResults(data as any);
+    }
   }
 
   function handleRecentTap(term: string) {
@@ -109,55 +114,48 @@ export default function SearchScreen() {
       </View>
 
       {query.length === 0 ? (
-        <FlatList
-          data={[]}
-          renderItem={null}
-          style={{ backgroundColor: bg }}
-          ListHeaderComponent={
-            <View style={{ backgroundColor: bg }}>
-              {/* Recent searches */}
-              {recentSearches.length > 0 && (
-                <View style={styles.section}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={[styles.sectionTitle, { color: textColor }]}>Recent searches</Text>
-                    <TouchableOpacity onPress={() => setRecentSearches([])}>
-                      <Text style={styles.clearText}>Clear</Text>
-                    </TouchableOpacity>
-                  </View>
-                  {recentSearches.map((term, i) => (
-                    <TouchableOpacity
-                      key={i}
-                      style={[styles.recentItem, { borderBottomColor: dividerColor }]}
-                      onPress={() => handleRecentTap(term)}
-                    >
-                      <Ionicons name="time-outline" size={16} color={subColor} />
-                      <Text style={[styles.recentText, { color: textColor }]}>{term}</Text>
-                      <Ionicons name="arrow-up-outline" size={16} color={subColor} style={{ transform: [{ rotate: '45deg' }] }} />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-
-              {/* Popular categories */}
-              <View style={styles.section}>
-                <Text style={[styles.sectionTitle, { color: textColor }]}>Popular categories</Text>
-                <View style={styles.catGrid}>
-                  {POPULAR_CATEGORIES.map(c => (
-                    <TouchableOpacity
-                      key={c.label}
-                      style={[styles.catCard, { backgroundColor: cardBg }]}
-                      onPress={() => handleCategoryTap(c.label)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.catEmoji}>{c.icon}</Text>
-                      <Text style={[styles.catLabel, { color: textColor }]}>{c.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+        <ScrollView style={{ backgroundColor: bg }} showsVerticalScrollIndicator={false}>
+          {/* Recent searches */}
+          {recentSearches.length > 0 && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={[styles.sectionTitle, { color: textColor }]}>Recent searches</Text>
+                <TouchableOpacity onPress={() => setRecentSearches([])}>
+                  <Text style={styles.clearText}>Clear</Text>
+                </TouchableOpacity>
               </View>
+              {recentSearches.map((term, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={[styles.recentItem, { borderBottomColor: dividerColor }]}
+                  onPress={() => handleRecentTap(term)}
+                >
+                  <Ionicons name="time-outline" size={16} color={subColor} />
+                  <Text style={[styles.recentText, { color: textColor }]}>{term}</Text>
+                  <Ionicons name="arrow-up-outline" size={16} color={subColor} style={{ transform: [{ rotate: '45deg' }] }} />
+                </TouchableOpacity>
+              ))}
             </View>
-          }
-        />
+          )}
+
+          {/* Popular categories */}
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: textColor }]}>Popular categories</Text>
+            <View style={styles.catGrid}>
+              {POPULAR_CATEGORIES.map(c => (
+                <TouchableOpacity
+                  key={c.label}
+                  style={[styles.catCard, { backgroundColor: cardBg }]}
+                  onPress={() => handleCategoryTap(c.label)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.catEmoji}>{c.icon}</Text>
+                  <Text style={[styles.catLabel, { color: textColor }]}>{c.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </ScrollView>
       ) : (
         <FlatList
           data={results}
